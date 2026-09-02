@@ -11,24 +11,23 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Lightweight WebSocket signaling + time-beacon server that runs on the Master device.
- * Clients connect to ws://<master-ip>:8080
- */
 class SignalingServer(
     private val port: Int = 8080,
+    private val expectedSession: String,
     private val onClientMessage: (clientId: String, msg: JSONObject) -> Unit,
-    private val onClientJoined: (clientId: String, index: Int, columns: Int, rows: Int) -> Unit,
+    private val onClientJoined: (clientId: String, phoneNumber: Int) -> Unit,
     private val onClientLeft: (clientId: String) -> Unit
 ) : WebSocketServer(InetSocketAddress(port)) {
 
     private val sockets = ConcurrentHashMap<String, WebSocket>()
+    private val phoneCounter = AtomicInteger(0)
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private var timeBeacon: ScheduledFuture<*>? = null
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
-        Log.i(TAG, "Client connected: ${conn.remoteSocketAddress}")
+        Log.i(TAG, "Socket open: ${conn.remoteSocketAddress}")
     }
 
     override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
@@ -45,12 +44,16 @@ class SignalingServer(
             val json = JSONObject(message)
             when (json.type()) {
                 Msg.JOIN -> {
+                    val session = json.optString(Msg.SESSION, "")
+                    if (session != expectedSession) {
+                        conn.close(4001, "bad session")
+                        return
+                    }
                     val id = json.getString(Msg.CLIENT_ID)
                     sockets[id] = conn
-                    val index = json.getInt(Msg.INDEX)
-                    val cols = json.getInt(Msg.COLUMNS)
-                    val rows = json.getInt(Msg.ROWS)
-                    onClientJoined(id, index, cols, rows)
+                    val phone = phoneCounter.incrementAndGet()
+                    conn.send(welcomeMsg(id, phone).toString())
+                    onClientJoined(id, phone)
                 }
                 Msg.TIME_REQ -> {
                     val mono = SystemClock.elapsedRealtimeNanos()
@@ -58,7 +61,10 @@ class SignalingServer(
                     conn.send(timeMsg(mono, wall).toString())
                 }
                 else -> {
-                    val id = json.optString(Msg.CLIENT_ID, sockets.entries.find { it.value == conn }?.key ?: "")
+                    val id = json.optString(
+                        Msg.CLIENT_ID,
+                        sockets.entries.find { it.value == conn }?.key ?: ""
+                    )
                     if (id.isNotEmpty()) onClientMessage(id, json)
                 }
             }
@@ -72,22 +78,24 @@ class SignalingServer(
     }
 
     override fun onStart() {
-        Log.i(TAG, "Signaling server started on port $port")
+        Log.i(TAG, "Signaling on port $port session=$expectedSession")
         connectionLostTimeout = 30
         startTimeBeacon()
     }
 
     private fun startTimeBeacon() {
         timeBeacon = scheduler.scheduleAtFixedRate({
-            val mono = SystemClock.elapsedRealtimeNanos()
-            val wall = System.currentTimeMillis()
-            val msg = timeMsg(mono, wall).toString()
+            val msg = timeMsg(SystemClock.elapsedRealtimeNanos(), System.currentTimeMillis()).toString()
             broadcast(msg)
-        }, 0, 200, TimeUnit.MILLISECONDS)
+        }, 0, 250, TimeUnit.MILLISECONDS)
     }
 
     fun sendTo(clientId: String, msg: JSONObject) {
         sockets[clientId]?.send(msg.toString())
+    }
+
+    fun broadcastJson(msg: JSONObject) {
+        broadcast(msg.toString())
     }
 
     fun stopServer() {
@@ -95,7 +103,8 @@ class SignalingServer(
         scheduler.shutdownNow()
         try {
             stop(1000)
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
     }
 
     companion object {
