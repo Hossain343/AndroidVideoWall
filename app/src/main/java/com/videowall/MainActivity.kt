@@ -53,7 +53,6 @@ import com.videowall.webrtc.iceMsg
 import com.videowall.webrtc.offerMsg
 import com.videowall.webrtc.type
 import org.json.JSONObject
-import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
