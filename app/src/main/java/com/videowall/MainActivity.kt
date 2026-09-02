@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
-import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
@@ -12,14 +11,32 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.Modifier.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -27,17 +44,22 @@ import com.videowall.audio.SpatialAudioController
 import com.videowall.render.CroppedVideoSink
 import com.videowall.render.GridCalculator
 import com.videowall.sync.TimeSyncManager
-import com.videowall.webrtc.*
+import com.videowall.webrtc.Msg
+import com.videowall.webrtc.SignalingClient
+import com.videowall.webrtc.SignalingServer
+import com.videowall.webrtc.WebRtcEngine
+import com.videowall.webrtc.answerMsg
+import com.videowall.webrtc.iceMsg
+import com.videowall.webrtc.offerMsg
+import com.videowall.webrtc.type
 import org.json.JSONObject
 import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
-import org.webrtc.VideoTrack
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.URI
-import java.util.*
 
 enum class Role { NONE, MASTER, CLIENT }
 
@@ -53,7 +75,7 @@ class MainActivity : ComponentActivity() {
 
     private var role by mutableStateOf(Role.NONE)
     private var status by mutableStateOf("Ready")
-    private var localIp by mutableStateOf("—")
+    private var localIp by mutableStateOf("-")
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -73,7 +95,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Black
+                ) {
                     when (role) {
                         Role.NONE -> RoleSelection(
                             onMaster = { requestScreenCapture() },
@@ -82,15 +107,20 @@ class MainActivity : ComponentActivity() {
                         Role.MASTER -> MasterScreen(
                             ip = localIp,
                             status = status,
-                            onStop = { stopAll(); role = Role.NONE }
+                            onStop = {
+                                stopAll()
+                                role = Role.NONE
+                            }
                         )
                         Role.CLIENT -> ClientScreen(
                             status = status,
                             onConnect = { ip, port, index, cols, rows ->
                                 connectClient(ip, port, index, cols, rows)
                             },
-                            onStop = { stopAll(); role = Role.NONE },
-                            eglBase = engine.eglBase,
+                            onStop = {
+                                stopAll()
+                                role = Role.NONE
+                            },
                             onRendererReady = { r ->
                                 renderer = r
                                 r.init(engine.eglBase.eglBaseContext, null)
@@ -111,7 +141,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startMaster(resultCode: Int, data: Intent) {
         role = Role.MASTER
-        status = "Starting capture…"
+        status = "Starting capture..."
         val dm = resources.displayMetrics
         engine.startScreenCapture(resultCode, data, dm.widthPixels, dm.heightPixels, 30)
 
@@ -165,7 +195,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectClient(ip: String, port: Int, index: Int, cols: Int, rows: Int) {
-        status = "Connecting…"
+        status = "Connecting..."
         val clientId = WebRtcEngine.newClientId()
         val crop = GridCalculator.cropForIndex(index, cols, rows)
         spatial.setGridPan(GridCalculator.horizontalPan(index, cols, rows))
@@ -179,7 +209,7 @@ class MainActivity : ComponentActivity() {
                     status = "Streaming tile $index"
                 }
             },
-            onLocalSdp = { /* answer sent via signaling */ },
+            onLocalSdp = { },
             onIce = { ice ->
                 signalingClient?.send(
                     iceMsg(ice.sdp, ice.sdpMid, ice.sdpMLineIndex, clientId)
@@ -194,7 +224,7 @@ class MainActivity : ComponentActivity() {
             onMessage = { msg -> handleClientMessage(msg, clientId) },
             onConnected = {
                 signalingClient?.join(index, cols, rows)
-                status = "Joined, waiting for offer…"
+                status = "Joined, waiting for offer..."
             },
             onDisconnected = { status = "Disconnected" }
         )
@@ -254,7 +284,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         return null
     }
 
@@ -266,18 +297,30 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun RoleSelection(onMaster: () -> Unit, onClient: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(32.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Video Wall", style = MaterialTheme.typography.headlineLarge, color = Color.White)
-        Spacer(Modifier.height(48.dp))
-        Button(onClick = onMaster, modifier = Modifier.fillMaxWidth()) {
-            Text("MASTER – Stream Screen")
+        Text(
+            text = "Video Wall",
+            style = MaterialTheme.typography.headlineLarge,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(48.dp))
+        Button(
+            onClick = onMaster,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("MASTER - Stream Screen")
         }
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = onClient, modifier = Modifier.fillMaxWidth()) {
-            Text("CLIENT – Join as Tile")
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = onClient,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("CLIENT - Join as Tile")
         }
     }
 }
@@ -285,18 +328,26 @@ fun RoleSelection(onMaster: () -> Unit, onClient: () -> Unit) {
 @Composable
 fun MasterScreen(ip: String, status: String, onStop: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("MASTER", style = MaterialTheme.typography.headlineMedium, color = Color.Green)
-        Spacer(Modifier.height(16.dp))
-        Text("IP: $ip", color = Color.White)
-        Text("Port: 8080", color = Color.White)
-        Spacer(Modifier.height(8.dp))
-        Text(status, color = Color.LightGray)
-        Spacer(Modifier.height(32.dp))
-        Button(onClick = onStop) { Text("Stop") }
+        Text(
+            text = "MASTER",
+            style = MaterialTheme.typography.headlineMedium,
+            color = Color.Green
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "IP: $ip", color = Color.White)
+        Text(text = "Port: 8080", color = Color.White)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = status, color = Color.LightGray)
+        Spacer(modifier = Modifier.height(32.dp))
+        Button(onClick = onStop) {
+            Text("Stop")
+        }
     }
 }
 
@@ -305,7 +356,6 @@ fun ClientScreen(
     status: String,
     onConnect: (ip: String, port: Int, index: Int, cols: Int, rows: Int) -> Unit,
     onStop: () -> Unit,
-    eglBase: EglBase,
     onRendererReady: (SurfaceViewRenderer) -> Unit
 ) {
     var ip by remember { mutableStateOf("") }
@@ -315,37 +365,86 @@ fun ClientScreen(
     var rows by remember { mutableStateOf("2") }
     var connected by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize()) {
         if (!connected) {
             Column(
-                Modifier.fillMaxSize().padding(24.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text("CLIENT", style = MaterialTheme.typography.headlineMedium, color = Color.Cyan)
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(ip, { ip = it }, label = { Text("Master IP") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(port, { port = it }, label = { Text("Port") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(index, { index = it }, label = { Text("Grid Number (1-based)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                Text(
+                    text = "CLIENT",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = Color.Cyan
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = ip,
+                    onValueChange = { ip = it },
+                    label = { Text("Master IP") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it },
+                    label = { Text("Port") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = index,
+                    onValueChange = { index = it },
+                    label = { Text("Grid Number (1-based)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row {
-                    OutlinedTextField(cols, { cols = it }, label = { Text("Columns") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedTextField(rows, { rows = it }, label = { Text("Rows") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = cols,
+                        onValueChange = { cols = it },
+                        label = { Text("Columns") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedTextField(
+                        value = rows,
+                        onValueChange = { rows = it },
+                        label = { Text("Rows") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                Spacer(Modifier.height(16.dp))
-                Text(status, color = Color.LightGray)
-                Spacer(Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = status, color = Color.LightGray)
+                Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = {
                         connected = true
-                        onConnect(ip.trim(), port.toIntOrNull() ?: 8080, index.toIntOrNull() ?: 1, cols.toIntOrNull() ?: 2, rows.toIntOrNull() ?: 2)
+                        onConnect(
+                            ip.trim(),
+                            port.toIntOrNull() ?: 8080,
+                            index.toIntOrNull() ?: 1,
+                            cols.toIntOrNull() ?: 2,
+                            rows.toIntOrNull() ?: 2
+                        )
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Connect") }
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onStop) { Text("Back") }
+                ) {
+                    Text("Connect")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onStop) {
+                    Text("Back")
+                }
             }
         } else {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            ) {
                 AndroidView(
                     factory = { ctx ->
                         SurfaceViewRenderer(ctx).also { onRendererReady(it) }
@@ -355,12 +454,21 @@ fun ClientScreen(
                 Text(
                     text = status,
                     color = Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
                 )
                 Button(
-                    onClick = { connected = false; onStop() },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-                ) { Text("Stop") }
+                    onClick = {
+                        connected = false
+                        onStop()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                ) {
+                    Text("Stop")
+                }
             }
         }
     }
