@@ -11,19 +11,26 @@ object Msg {
     const val TIME_REQ = "time_req"
     const val JOIN = "join"
     const val LEAVE = "leave"
-    const val GRID = "grid"
-    const val ACTION_X = "action_x"
+    const val ASSIGN = "assign"
+    const val BRIGHTNESS = "brightness"
+    const val COLOR_SYNC = "color_sync"
+    const val AUDIO_MUTE = "audio_mute"
+    const val WELCOME = "welcome"
     const val SDP = "sdp"
     const val CANDIDATE = "candidate"
     const val SDP_MID = "sdpMid"
     const val SDP_MLINE = "sdpMLineIndex"
     const val CLIENT_ID = "clientId"
-    const val INDEX = "index"
+    const val PHONE = "phone"
+    const val SESSION = "session"
+    const val COL = "col"
+    const val ROW = "row"
     const val COLUMNS = "columns"
     const val ROWS = "rows"
+    const val VALUE = "value"
+    const val ENABLED = "enabled"
     const val T = "t"
     const val WALL = "wall"
-    const val X = "x"
 }
 
 fun JSONObject.type(): String = optString(Msg.TYPE, "")
@@ -56,15 +63,40 @@ fun timeMsg(monoNs: Long, wallMs: Long) = JSONObject().apply {
 
 fun timeReqMsg() = JSONObject().apply { put(Msg.TYPE, Msg.TIME_REQ) }
 
-fun joinMsg(clientId: String, index: Int, columns: Int, rows: Int) = JSONObject().apply {
+fun joinMsg(clientId: String, session: String) = JSONObject().apply {
     put(Msg.TYPE, Msg.JOIN)
     put(Msg.CLIENT_ID, clientId)
-    put(Msg.INDEX, index)
+    put(Msg.SESSION, session)
+}
+
+fun welcomeMsg(clientId: String, phone: Int) = JSONObject().apply {
+    put(Msg.TYPE, Msg.WELCOME)
+    put(Msg.CLIENT_ID, clientId)
+    put(Msg.PHONE, phone)
+}
+
+fun assignMsg(clientId: String, col: Int, row: Int, columns: Int, rows: Int) = JSONObject().apply {
+    put(Msg.TYPE, Msg.ASSIGN)
+    put(Msg.CLIENT_ID, clientId)
+    put(Msg.COL, col)
+    put(Msg.ROW, row)
     put(Msg.COLUMNS, columns)
     put(Msg.ROWS, rows)
 }
 
-fun actionXMsg(x: Float) = JSONObject().apply {
-    put(Msg.TYPE, Msg.ACTION_X)
-    put(Msg.X, x.toDouble())
+fun brightnessMsg(clientId: String, value: Float) = JSONObject().apply {
+    put(Msg.TYPE, Msg.BRIGHTNESS)
+    put(Msg.CLIENT_ID, clientId)
+    put(Msg.VALUE, value.toDouble())
+}
+
+fun colorSyncMsg(enabled: Boolean) = JSONObject().apply {
+    put(Msg.TYPE, Msg.COLOR_SYNC)
+    put(Msg.ENABLED, enabled)
+}
+
+fun audioMuteMsg(clientId: String, muted: Boolean) = JSONObject().apply {
+    put(Msg.TYPE, Msg.AUDIO_MUTE)
+    put(Msg.CLIENT_ID, clientId)
+    put(Msg.ENABLED, muted)
 }
