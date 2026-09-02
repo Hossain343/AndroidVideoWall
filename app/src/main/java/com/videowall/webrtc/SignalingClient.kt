@@ -12,21 +12,21 @@ import java.util.concurrent.atomic.AtomicLong
 class SignalingClient(
     private val serverUri: URI,
     private val clientId: String,
+    private val sessionId: String,
     private val timeSync: TimeSyncManager,
     private val onMessage: (JSONObject) -> Unit,
     private val onConnected: () -> Unit,
     private val onDisconnected: () -> Unit
 ) {
-
     private var client: WebSocketClient? = null
     private val lastTimeReqNs = AtomicLong(0)
 
     fun connect() {
         client = object : WebSocketClient(serverUri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
-                Log.i(TAG, "Connected to signaling server")
+                Log.i(TAG, "Connected")
                 onConnected()
-                // request an immediate time sample
+                send(joinMsg(clientId, sessionId))
                 send(timeReqMsg())
             }
 
@@ -69,17 +69,18 @@ class SignalingClient(
         if (msg.type() == Msg.TIME_REQ) {
             lastTimeReqNs.set(SystemClock.elapsedRealtimeNanos())
         }
-        client?.send(msg.toString())
-    }
-
-    fun join(index: Int, columns: Int, rows: Int) {
-        send(joinMsg(clientId, index, columns, rows))
+        try {
+            client?.send(msg.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "send failed", e)
+        }
     }
 
     fun close() {
         try {
             client?.close()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         client = null
     }
 
