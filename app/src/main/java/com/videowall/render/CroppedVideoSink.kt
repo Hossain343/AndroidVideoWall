@@ -1,16 +1,17 @@
 package com.videowall.render
 
 import android.util.Log
+import com.videowall.model.CropRect
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 
 /**
- * Intercepts incoming WebRTC VideoFrames, crops them to the assigned grid tile,
- * and forwards the cropped frame to the real renderer (SurfaceViewRenderer).
+ * Crops each WebRTC frame to the assigned grid tile before rendering.
+ * Crop can be updated live when Master drag-drops the client onto a new tile.
  */
 class CroppedVideoSink(
     private val target: VideoSink,
-    private var crop: CropRect
+    @Volatile private var crop: CropRect
 ) : VideoSink {
 
     @Volatile
@@ -25,7 +26,7 @@ class CroppedVideoSink(
     }
 
     override fun onFrame(frame: VideoFrame) {
-        if (!enabled) {
+        if (!enabled || crop.width <= 0f || crop.height <= 0f) {
             target.onFrame(frame)
             return
         }
@@ -33,6 +34,10 @@ class CroppedVideoSink(
         val buffer = frame.buffer
         val width = buffer.width
         val height = buffer.height
+        if (width <= 0 || height <= 0) {
+            target.onFrame(frame)
+            return
+        }
 
         val cropX = (crop.x * width).toInt().coerceIn(0, width - 1)
         val cropY = (crop.y * height).toInt().coerceIn(0, height - 1)
@@ -40,13 +45,13 @@ class CroppedVideoSink(
         val cropH = (crop.height * height).toInt().coerceAtLeast(1).coerceAtMost(height - cropY)
 
         try {
-            val cropped = buffer.cropAndScale(
-                cropX, cropY, cropW, cropH,
-                cropW, cropH
-            )
+            val cropped = buffer.cropAndScale(cropX, cropY, cropW, cropH, cropW, cropH)
             val croppedFrame = VideoFrame(cropped, frame.rotation, frame.timestampNs)
-            target.onFrame(croppedFrame)
-            croppedFrame.release()
+            try {
+                target.onFrame(croppedFrame)
+            } finally {
+                croppedFrame.release()
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Crop failed, passing original", e)
             target.onFrame(frame)
