@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
 import android.util.Log
+import org.webrtc.AudioSource
+import org.webrtc.AudioTrack
+import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
@@ -12,17 +15,14 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RtpReceiver
 import org.webrtc.ScreenCapturerAndroid
+import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoCapturer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
-import org.webrtc.AudioSource
-import org.webrtc.AudioTrack
-import org.webrtc.DataChannel
-import org.webrtc.RtpReceiver
-import org.webrtc.SdpObserver
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -34,15 +34,15 @@ class WebRtcEngine(private val context: Context) {
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
     )
 
-    // Master side
     private var screenCapturer: VideoCapturer? = null
     private var videoSource: VideoSource? = null
     private var localVideoTrack: VideoTrack? = null
     private var localAudioTrack: AudioTrack? = null
     private val peerConnections = ConcurrentHashMap<String, PeerConnection>()
 
-    // Client side
     var remoteVideoTrack: VideoTrack? = null
+        private set
+    var remoteAudioTrack: AudioTrack? = null
         private set
     private var clientPc: PeerConnection? = null
 
@@ -56,8 +56,6 @@ class WebRtcEngine(private val context: Context) {
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
     }
-
-    // ─────────────────── MASTER ───────────────────
 
     fun startScreenCapture(resultCode: Int, data: Intent, width: Int, height: Int, fps: Int = 30) {
         val capturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
@@ -145,10 +143,9 @@ class WebRtcEngine(private val context: Context) {
         peerConnections.remove(clientId)?.close()
     }
 
-    // ─────────────────── CLIENT ───────────────────
-
     fun createAnswerPeer(
         onRemoteTrack: (VideoTrack) -> Unit,
+        onRemoteAudio: (AudioTrack) -> Unit = {},
         onLocalSdp: (SessionDescription) -> Unit,
         onIce: (IceCandidate) -> Unit
     ) {
@@ -163,15 +160,33 @@ class WebRtcEngine(private val context: Context) {
                 candidate?.let { onIce(it) }
             }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-            override fun onAddStream(stream: MediaStream?) {}
+            override fun onAddStream(stream: MediaStream?) {
+                stream?.audioTracks?.firstOrNull()?.let { at ->
+                    remoteAudioTrack = at
+                    at.setEnabled(true)
+                    onRemoteAudio(at)
+                }
+                stream?.videoTracks?.firstOrNull()?.let { vt ->
+                    remoteVideoTrack = vt
+                    onRemoteTrack(vt)
+                }
+            }
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(dc: DataChannel?) {}
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                val track = receiver?.track()
-                if (track is VideoTrack) {
-                    remoteVideoTrack = track
-                    onRemoteTrack(track)
+                when (val track = receiver?.track()) {
+                    is VideoTrack -> {
+                        remoteVideoTrack = track
+                        track.setEnabled(true)
+                        onRemoteTrack(track)
+                    }
+                    is AudioTrack -> {
+                        remoteAudioTrack = track
+                        track.setEnabled(true)
+                        Log.i(TAG, "Remote AudioTrack enabled")
+                        onRemoteAudio(track)
+                    }
                 }
             }
         }
@@ -182,12 +197,32 @@ class WebRtcEngine(private val context: Context) {
             },
             observer
         )
+
+        clientPc?.addTransceiver(
+            org.webrtc.MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+            org.webrtc.RtpTransceiver.RtpTransceiverInit(
+                org.webrtc.RtpTransceiver.RtpTransceiverDirection.RECV_ONLY
+            )
+        )
+        clientPc?.addTransceiver(
+            org.webrtc.MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+            org.webrtc.RtpTransceiver.RtpTransceiverInit(
+                org.webrtc.RtpTransceiver.RtpTransceiverDirection.RECV_ONLY
+            )
+        )
+    }
+
+    fun setRemoteAudioEnabled(enabled: Boolean) {
+        remoteAudioTrack?.setEnabled(enabled)
     }
 
     fun handleOffer(sdp: SessionDescription, onAnswer: (SessionDescription) -> Unit) {
         val pc = clientPc ?: return
         pc.setRemoteDescription(SimpleSdpObserver(), sdp)
-        val constraints = MediaConstraints()
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        }
         pc.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(answer: SessionDescription?) {
                 answer ?: return
@@ -209,7 +244,12 @@ class WebRtcEngine(private val context: Context) {
         peerConnections.clear()
         clientPc?.close()
         clientPc = null
-        screenCapturer?.stopCapture()
+        remoteAudioTrack = null
+        remoteVideoTrack = null
+        try {
+            screenCapturer?.stopCapture()
+        } catch (_: Exception) {
+        }
         screenCapturer?.dispose()
         screenCapturer = null
         videoSource?.dispose()
@@ -225,7 +265,6 @@ class WebRtcEngine(private val context: Context) {
     }
 }
 
-/** Minimal no-op SDP observer. */
 class SimpleSdpObserver : SdpObserver {
     override fun onCreateSuccess(p0: SessionDescription?) {}
     override fun onSetSuccess() {}
