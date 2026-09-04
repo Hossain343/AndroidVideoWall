@@ -1,49 +1,31 @@
 package com.videowall.audio
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
+import android.content.Context
 import android.media.AudioManager
-import android.media.AudioTrack
 import android.util.Log
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Applies constant-power stereo panning based on the device's horizontal
- * position in the video wall grid.  Can also bias toward a dynamic "action X"
- * received from the Master over the data channel.
- *
- * For simplicity this class demonstrates the panning math; in a full WebRTC
- * pipeline the same gains are applied either via a custom AudioTrack sink
- * or by post-processing the remote audio track samples.
+ * Applies constant-power stereo panning based on grid column.
+ * Routes remote WebRTC audio to speaker and applies mute/unmute.
  */
 class SpatialAudioController {
 
     @Volatile
-    var basePan: Float = 0f   // -1 (left) … +1 (right)
+    var basePan: Float = 0f
 
     @Volatile
-    var actionBias: Float = 0f // additional bias from Master
+    var actionBias: Float = 0f
 
-    private val running = AtomicBoolean(false)
-
-    /** Final pan after combining base grid position + live action. */
     fun effectivePan(): Float {
-        val p = (basePan + actionBias * 0.35f).coerceIn(-1f, 1f)
-        return p
+        return (basePan + actionBias * 0.35f).coerceIn(-1f, 1f)
     }
 
-    /** Constant-power pan gains. */
     fun gains(): Pair<Float, Float> {
         val p = effectivePan()
-        // map [-1,1] → [0, π/2]
         val angle = (p + 1f) * (Math.PI.toFloat() / 4f)
-        val left = cos(angle)
-        val right = sin(angle)
-        return left to right
+        return cos(angle) to sin(angle)
     }
 
     fun setGridPan(pan: Float) {
@@ -52,8 +34,53 @@ class SpatialAudioController {
     }
 
     fun setActionX(x: Float) {
-        // x is expected in [0,1] full-frame coordinate
         actionBias = ((x * 2f) - 1f).coerceIn(-1f, 1f)
+    }
+
+    fun applyToDevice(context: Context, audioEnabled: Boolean) {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.mode = AudioManager.MODE_NORMAL
+            am.isSpeakerphoneOn = true
+            if (audioEnabled) {
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.ADJUST_UNMUTE,
+                    0
+                )
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_UNMUTE,
+                    0
+                )
+            } else {
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.ADJUST_MUTE,
+                    0
+                )
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_MUTE,
+                    0
+                )
+            }
+            val (left, right) = gains()
+            try {
+                @Suppress("DEPRECATION")
+                am.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    if (audioEnabled) {
+                        (am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) *
+                            ((left + right) / 2f).coerceIn(0.1f, 1f)).toInt()
+                    } else 0,
+                    0
+                )
+            } catch (_: Exception) {
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "applyToDevice", e)
+        }
     }
 
     companion object {
