@@ -5,46 +5,49 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Maintains a clock offset relative to the Master.
- * All timestamps used for rendering / audio decisions should go through [nowNs].
+ * All timestamps used for rendering decisions go through [nowNs].
+ *
+ * Protocol:
+ *  Client sends TIME_REQ at local T0
+ *  Master replies TIME with masterMonoNs
+ *  Client receives at local T1
+ *  offset ≈ masterMonoNs + RTT/2 - T1
  */
 class TimeSyncManager {
 
     private val offsetNs = AtomicLong(0L)
     private val lastRttNs = AtomicLong(0L)
+    private val sampleCount = AtomicLong(0L)
 
-    /** Current synchronized time in nanoseconds (monotonic domain aligned to Master). */
     fun nowNs(): Long = SystemClock.elapsedRealtimeNanos() + offsetNs.get()
 
     fun offsetNs(): Long = offsetNs.get()
 
     fun lastRttNs(): Long = lastRttNs.get()
 
-    /**
-     * Called when a time beacon arrives from Master.
-     * @param masterMonoNs  Master's SystemClock.elapsedRealtimeNanos() at send
-     * @param receiveLocalNs Local elapsedRealtimeNanos when packet was received
-     * @param sendLocalNs   Local elapsedRealtimeNanos when the request (if any) was sent
-     *
-     * Simple one-way or request-reply offset estimation.
-     * For request-reply: RTT = receive - send; offset ≈ master - local - RTT/2
-     */
     fun onMasterTime(
         masterMonoNs: Long,
         receiveLocalNs: Long,
         sendLocalNs: Long? = null
     ) {
-        if (sendLocalNs != null) {
-            val rtt = receiveLocalNs - sendLocalNs
+        if (sendLocalNs != null && sendLocalNs > 0) {
+            val rtt = (receiveLocalNs - sendLocalNs).coerceAtLeast(0)
             lastRttNs.set(rtt)
             val estimatedMasterAtReceive = masterMonoNs + rtt / 2
             val newOffset = estimatedMasterAtReceive - receiveLocalNs
-            // mild smoothing
-            val prev = offsetNs.get()
-            offsetNs.set((prev * 3 + newOffset) / 4)
+            smoothOffset(newOffset)
         } else {
-            // one-way: assume negligible one-way delay on LAN
             val newOffset = masterMonoNs - receiveLocalNs
-            val prev = offsetNs.get()
+            smoothOffset(newOffset)
+        }
+    }
+
+    private fun smoothOffset(newOffset: Long) {
+        val n = sampleCount.incrementAndGet()
+        val prev = offsetNs.get()
+        if (n <= 2L || prev == 0L) {
+            offsetNs.set(newOffset)
+        } else {
             offsetNs.set((prev * 7 + newOffset) / 8)
         }
     }
