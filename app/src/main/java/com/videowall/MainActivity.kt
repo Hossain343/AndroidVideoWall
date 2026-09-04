@@ -9,6 +9,8 @@ import android.graphics.Bitmap
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -18,6 +20,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,17 +55,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.zxing.integration.android.IntentIntegrator
 import com.videowall.audio.SpatialAudioController
 import com.videowall.model.ClientNode
 import com.videowall.model.GridMath
 import com.videowall.model.JoinUri
 import com.videowall.render.CroppedVideoSink
+import com.videowall.render.JitterBufferSink
 import com.videowall.sync.TimeSyncManager
 import com.videowall.util.QrBitmap
 import com.videowall.webrtc.Msg
@@ -100,6 +108,7 @@ class MainActivity : ComponentActivity() {
     private var signalingServer: SignalingServer? = null
     private var signalingClient: SignalingClient? = null
     private var croppedSink: CroppedVideoSink? = null
+    private var jitterSink: JitterBufferSink? = null
     private var renderer: SurfaceViewRenderer? = null
     private var remoteTrack: VideoTrack? = null
 
@@ -119,6 +128,10 @@ class MainActivity : ComponentActivity() {
     private var myClientId by mutableStateOf("")
     private var audioEnabled by mutableStateOf(true)
     private var clientColorSync by mutableStateOf(false)
+
+    private var controlsVisible by mutableStateOf(true)
+    private val hideHandler = Handler(Looper.getMainLooper())
+    private val hideRunnable = Runnable { controlsVisible = false }
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -160,6 +173,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyImmersiveMode()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = WebRtcEngine(applicationContext)
         localIp = getLocalIpAddress() ?: "unknown"
@@ -182,6 +196,8 @@ class MainActivity : ComponentActivity() {
                             clients = clients.toList(),
                             colorSync = colorSyncOn,
                             masterBrightness = masterBrightness,
+                            controlsVisible = controlsVisible,
+                            onUserInteraction = { bumpControls() },
                             onColumns = { gridColumns = it.coerceIn(1, 6) },
                             onRows = { gridRows = it.coerceIn(1, 6) },
                             onDrop = { clientId, col, row -> placeClient(clientId, col, row) },
@@ -196,6 +212,8 @@ class MainActivity : ComponentActivity() {
                             phoneNumber = myPhone,
                             audioEnabled = audioEnabled,
                             colorSync = clientColorSync,
+                            controlsVisible = controlsVisible,
+                            onUserInteraction = { bumpControls() },
                             onToggleAudio = { toggleLocalAudio(!audioEnabled) },
                             onScanAgain = { requestCameraAndScan() },
                             onStop = { stopAll(); role = Role.NONE },
@@ -216,6 +234,32 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        bumpControls()
+    }
+
+    private fun applyImmersiveMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyImmersiveMode()
+    }
+
+    private fun bumpControls() {
+        controlsVisible = true
+        hideHandler.removeCallbacks(hideRunnable)
+        hideHandler.postDelayed(hideRunnable, 3000L)
     }
 
     private fun prepareMaster() {
@@ -247,6 +291,7 @@ class MainActivity : ComponentActivity() {
         sessionId = UUID.randomUUID().toString().take(8)
         status = "Starting room..."
         clients.clear()
+        bumpControls()
         val dm = resources.displayMetrics
         try {
             engine.startScreenCapture(resultCode, data, dm.widthPixels, dm.heightPixels, 30)
@@ -265,6 +310,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     clients.add(ClientNode(clientId = id, phoneNumber = phone))
                     status = "Phone #$phone joined"
+                    bumpControls()
                     engine.createOfferForClient(
                         clientId = id,
                         onLocalSdp = { sdp ->
@@ -313,6 +359,7 @@ class MainActivity : ComponentActivity() {
             assignMsg(clientId, col, row, gridColumns, gridRows)
         )
         status = "Phone #${clients[idx].phoneNumber} → tile ($col,$row)"
+        bumpControls()
     }
 
     private fun setClientBrightness(clientId: String, value: Float) {
@@ -325,12 +372,14 @@ class MainActivity : ComponentActivity() {
         val v = masterBrightness
         clients.forEach { setClientBrightness(it.clientId, v) }
         status = "Brightness synced to ${(v * 100).toInt()}%"
+        bumpControls()
     }
 
     private fun toggleColorSync(enabled: Boolean) {
         colorSyncOn = enabled
         signalingServer?.broadcastJson(colorSyncMsg(enabled))
         status = if (enabled) "Color Sync ON" else "Color Sync OFF"
+        bumpControls()
     }
 
     private fun handleMasterMessage(clientId: String, msg: JSONObject) {
@@ -353,6 +402,7 @@ class MainActivity : ComponentActivity() {
     private fun prepareClient() {
         role = Role.CLIENT
         status = "Scan Master QR code"
+        bumpControls()
         requestCameraAndScan()
     }
 
@@ -386,6 +436,14 @@ class MainActivity : ComponentActivity() {
                     remoteTrack = track
                     attachTrack(track)
                     status = "Streaming"
+                    bumpControls()
+                }
+            },
+            onRemoteAudio = { audioTrack ->
+                runOnUiThread {
+                    audioTrack.setEnabled(audioEnabled)
+                    spatial.applyToDevice(this, audioEnabled)
+                    Log.i(TAG, "Client audio track live, enabled=$audioEnabled")
                 }
             },
             onLocalSdp = { },
@@ -408,10 +466,20 @@ class MainActivity : ComponentActivity() {
 
     private fun attachTrack(track: VideoTrack) {
         val r = renderer ?: return
-        croppedSink?.let { track.removeSink(it) }
+        remoteTrack?.let { t ->
+            jitterSink?.let { t.removeSink(it) }
+            croppedSink?.let { t.removeSink(it) }
+        }
+        jitterSink?.release()
+        jitterSink = null
+        croppedSink = null
+
         val defaultCrop = GridMath.cropForTile(0, 0, 1, 1)
-        croppedSink = CroppedVideoSink(r, defaultCrop)
-        track.addSink(croppedSink)
+        val cropSink = CroppedVideoSink(r, defaultCrop)
+        croppedSink = cropSink
+        val jitter = JitterBufferSink(cropSink, timeSync, targetDelayMs = 80L)
+        jitterSink = jitter
+        track.addSink(jitter)
     }
 
     private fun handleClientMessage(msg: JSONObject) {
@@ -420,6 +488,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     myPhone = msg.getInt(Msg.PHONE)
                     status = "This Phone Number: $myPhone"
+                    bumpControls()
                 }
             }
             Msg.OFFER -> {
@@ -443,9 +512,11 @@ class MainActivity : ComponentActivity() {
                 val rows = msg.getInt(Msg.ROWS)
                 val crop = GridMath.cropForTile(col, row, cols, rows)
                 spatial.setGridPan(GridMath.panForCol(col, cols))
+                spatial.applyToDevice(this, audioEnabled)
                 runOnUiThread {
                     croppedSink?.updateCrop(crop)
                     status = "Phone #$myPhone @ ($col,$row)"
+                    bumpControls()
                 }
             }
             Msg.BRIGHTNESS -> {
@@ -475,25 +546,24 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleLocalAudio(enabled: Boolean) {
         audioEnabled = enabled
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-            am.adjustStreamVolume(
-                android.media.AudioManager.STREAM_VOICE_CALL,
-                if (enabled) android.media.AudioManager.ADJUST_UNMUTE
-                else android.media.AudioManager.ADJUST_MUTE,
-                0
-            )
-        } catch (_: Exception) {
-        }
+        engine.setRemoteAudioEnabled(enabled)
+        spatial.applyToDevice(this, enabled)
+        bumpControls()
     }
 
     private fun stopAll() {
+        hideHandler.removeCallbacks(hideRunnable)
         signalingClient?.close()
         signalingClient = null
         signalingServer?.stopServer()
         signalingServer = null
-        remoteTrack?.let { t -> croppedSink?.let { t.removeSink(it) } }
+        remoteTrack?.let { t ->
+            jitterSink?.let { t.removeSink(it) }
+            croppedSink?.let { t.removeSink(it) }
+        }
         remoteTrack = null
+        jitterSink?.release()
+        jitterSink = null
         croppedSink = null
         try { renderer?.release() } catch (_: Exception) {}
         renderer = null
@@ -564,6 +634,8 @@ fun MasterDashboard(
     clients: List<ClientNode>,
     colorSync: Boolean,
     masterBrightness: Float,
+    controlsVisible: Boolean,
+    onUserInteraction: () -> Unit,
     onColumns: (Int) -> Unit,
     onRows: (Int) -> Unit,
     onDrop: (clientId: String, col: Int, row: Int) -> Unit,
@@ -573,119 +645,137 @@ fun MasterDashboard(
     onColorSync: (Boolean) -> Unit,
     onStop: () -> Unit
 ) {
-    Column(
+    Box(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
-    ) {
-        Text("MASTER DASHBOARD", color = Color.Green, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-        Text("IP $ip:8080  session $sessionId", color = Color.LightGray, fontSize = 12.sp)
-        Text(status, color = Color.Cyan, fontSize = 13.sp)
-        Spacer(Modifier.height(12.dp))
-
-        if (qr != null) {
-            Image(
-                bitmap = qr.asImageBitmap(),
-                contentDescription = "Join QR",
-                modifier = Modifier
-                    .size(200.dp)
-                    .align(Alignment.CenterHorizontally)
-                    .background(Color.White)
-                    .padding(8.dp)
-            )
-            Text(
-                "Clients scan this QR",
-                color = Color.Gray,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Text("Grid size", color = Color.White)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Cols $columns", color = Color.White, modifier = Modifier.width(72.dp))
-            Slider(
-                value = columns.toFloat(),
-                onValueChange = { onColumns(it.roundToInt()) },
-                valueRange = 1f..6f,
-                steps = 4,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Rows $rows", color = Color.White, modifier = Modifier.width(72.dp))
-            Slider(
-                value = rows.toFloat(),
-                onValueChange = { onRows(it.roundToInt()) },
-                valueRange = 1f..6f,
-                steps = 4,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Spacer(Modifier.height(8.dp))
-        Text("Chessboard — tap tile to place next unplaced phone", color = Color.White)
-        Chessboard(
-            columns = columns,
-            rows = rows,
-            clients = clients,
-            onDrop = onDrop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(columns.toFloat() / rows.coerceAtLeast(1).toFloat())
-                .padding(vertical = 8.dp)
-        )
-
-        Spacer(Modifier.height(12.dp))
-        Text("Brightness", color = Color.White)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Master ref", color = Color.LightGray, modifier = Modifier.width(80.dp))
-            Slider(
-                value = masterBrightness,
-                onValueChange = onMasterBrightness,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Button(onClick = onSyncAllBrightness, modifier = Modifier.fillMaxWidth()) {
-            Text("Sync All Clients to Master Brightness")
-        }
-        clients.forEach { c ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("#${c.phoneNumber}", color = Color.White, modifier = Modifier.width(40.dp))
-                Slider(
-                    value = c.brightness,
-                    onValueChange = { onBrightness(c.clientId, it) },
-                    modifier = Modifier.weight(1f)
-                )
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures { onUserInteraction() }
             }
-        }
+    ) {
+        if (controlsVisible) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp)
+            ) {
+                Text("MASTER DASHBOARD", color = Color.Green, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                Text("IP $ip:8080  session $sessionId", color = Color.LightGray, fontSize = 12.sp)
+                Text(status, color = Color.Cyan, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
 
-        Spacer(Modifier.height(8.dp))
-        FilterChip(
-            selected = colorSync,
-            onClick = { onColorSync(!colorSync) },
-            label = { Text(if (colorSync) "Sync Color ON" else "Sync Color") }
-        )
+                if (qr != null) {
+                    Image(
+                        bitmap = qr.asImageBitmap(),
+                        contentDescription = "Join QR",
+                        modifier = Modifier
+                            .size(200.dp)
+                            .align(Alignment.CenterHorizontally)
+                            .background(Color.White)
+                            .padding(8.dp)
+                    )
+                    Text(
+                        "Clients scan this QR",
+                        color = Color.Gray,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
 
-        Spacer(Modifier.height(16.dp))
-        Text("Unplaced devices", color = Color.Gray)
-        Row(modifier = Modifier.fillMaxWidth()) {
-            clients.filter { !it.isPlaced }.forEach { c ->
-                Box(
-                    Modifier
-                        .padding(4.dp)
-                        .background(Color(0xFF1565C0), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text("Phone #${c.phoneNumber}", color = Color.White)
+                Spacer(Modifier.height(16.dp))
+                Text("Grid size", color = Color.White)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Cols $columns", color = Color.White, modifier = Modifier.width(72.dp))
+                    Slider(
+                        value = columns.toFloat(),
+                        onValueChange = { onColumns(it.roundToInt()); onUserInteraction() },
+                        valueRange = 1f..6f,
+                        steps = 4,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Rows $rows", color = Color.White, modifier = Modifier.width(72.dp))
+                    Slider(
+                        value = rows.toFloat(),
+                        onValueChange = { onRows(it.roundToInt()); onUserInteraction() },
+                        valueRange = 1f..6f,
+                        steps = 4,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text("Chessboard — tap tile to place next unplaced phone", color = Color.White)
+                Chessboard(
+                    columns = columns,
+                    rows = rows,
+                    clients = clients,
+                    onDrop = { id, c, r -> onDrop(id, c, r); onUserInteraction() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(columns.toFloat() / rows.coerceAtLeast(1).toFloat())
+                        .padding(vertical = 8.dp)
+                )
+
+                Spacer(Modifier.height(12.dp))
+                Text("Brightness", color = Color.White)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Master ref", color = Color.LightGray, modifier = Modifier.width(80.dp))
+                    Slider(
+                        value = masterBrightness,
+                        onValueChange = { onMasterBrightness(it); onUserInteraction() },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Button(onClick = { onSyncAllBrightness(); onUserInteraction() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Sync All Clients to Master Brightness")
+                }
+                clients.forEach { c ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("#${c.phoneNumber}", color = Color.White, modifier = Modifier.width(40.dp))
+                        Slider(
+                            value = c.brightness,
+                            onValueChange = { onBrightness(c.clientId, it); onUserInteraction() },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                FilterChip(
+                    selected = colorSync,
+                    onClick = { onColorSync(!colorSync); onUserInteraction() },
+                    label = { Text(if (colorSync) "Sync Color ON" else "Sync Color") }
+                )
+
+                Spacer(Modifier.height(16.dp))
+                Text("Unplaced devices", color = Color.Gray)
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    clients.filter { !it.isPlaced }.forEach { c ->
+                        Box(
+                            Modifier
+                                .padding(4.dp)
+                                .background(Color(0xFF1565C0), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text("Phone #${c.phoneNumber}", color = Color.White)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
+                OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
+                    Text("Stop Room")
                 }
             }
-        }
-
-        Spacer(Modifier.height(24.dp))
-        OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
-            Text("Stop Room")
+        } else {
+            Text(
+                "Tap for controls",
+                color = Color.DarkGray,
+                fontSize = 12.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)
+            )
         }
     }
 }
@@ -744,12 +834,21 @@ fun ClientScreen(
     phoneNumber: Int,
     audioEnabled: Boolean,
     colorSync: Boolean,
+    controlsVisible: Boolean,
+    onUserInteraction: () -> Unit,
     onToggleAudio: () -> Unit,
     onScanAgain: () -> Unit,
     onStop: () -> Unit,
     onRendererReady: (SurfaceViewRenderer) -> Unit
 ) {
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures { onUserInteraction() }
+            }
+    ) {
         AndroidView(
             factory = { ctx ->
                 SurfaceViewRenderer(ctx).also { onRendererReady(it) }
@@ -759,33 +858,35 @@ fun ClientScreen(
         if (colorSync) {
             Box(Modifier.fillMaxSize().background(Color(0x22FFCC80)))
         }
-        Column(
-            Modifier
-                .align(Alignment.TopCenter)
-                .padding(16.dp)
-                .background(Color(0xAA000000), RoundedCornerShape(12.dp))
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                if (phoneNumber > 0) "This Phone Number: $phoneNumber" else "Waiting for assignment…",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
-            Text(status, color = Color.LightGray, fontSize = 12.sp)
-        }
-        Row(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(onClick = onToggleAudio) {
-                Text(if (audioEnabled) "Mute Speaker" else "Unmute Speaker")
+        if (controlsVisible) {
+            Column(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(16.dp)
+                    .background(Color(0xAA000000), RoundedCornerShape(12.dp))
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    if (phoneNumber > 0) "This Phone Number: $phoneNumber" else "Waiting for assignment…",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+                Text(status, color = Color.LightGray, fontSize = 12.sp)
             }
-            Button(onClick = onScanAgain) { Text("Rescan QR") }
-            Button(onClick = onStop) { Text("Stop") }
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = { onToggleAudio(); onUserInteraction() }) {
+                    Text(if (audioEnabled) "Mute Speaker" else "Unmute Speaker")
+                }
+                Button(onClick = { onScanAgain(); onUserInteraction() }) { Text("Rescan QR") }
+                Button(onClick = onStop) { Text("Stop") }
+            }
         }
     }
 }
