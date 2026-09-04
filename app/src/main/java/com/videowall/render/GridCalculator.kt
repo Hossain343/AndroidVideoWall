@@ -1,23 +1,12 @@
 package com.videowall.render
 
-/**
- * Computes normalized crop rectangles for a 1-based row-major grid index.
- *
- * Example 3x3:
- *  1 2 3
- *  4 5 6
- *  7 8 9
- */
-data class CropRect(
-    val x: Float,      // left  [0..1]
-    val y: Float,      // top   [0..1]
-    val width: Float,  // [0..1]
-    val height: Float  // [0..1]
-) {
-    val right: Float get() = x + width
-    val bottom: Float get() = y + height
-}
+import com.videowall.model.CropRect
+import com.videowall.model.GridMath
 
+/**
+ * Thin adapter over [GridMath] for 1-based row-major grid indices.
+ * Crop is always in Master source-canvas UV space.
+ */
 object GridCalculator {
 
     fun cropForIndex(
@@ -33,22 +22,13 @@ object GridCalculator {
         val zeroBased = index - 1
         val col = zeroBased % columns
         val row = zeroBased / columns
-
-        val w = 1f / columns
-        val h = 1f / rows
-        return CropRect(
-            x = col * w,
-            y = row * h,
-            width = w,
-            height = h
-        )
+        return GridMath.cropForTile(col, row, columns, rows)
     }
 
     /** Horizontal position in [-1, +1] used for spatial audio pan. */
     fun horizontalPan(index: Int, columns: Int, rows: Int): Float {
-        val crop = cropForIndex(index, columns, rows)
-        val centerX = crop.x + crop.width / 2f
-        // map [0,1] → [-1,+1]
-        return (centerX * 2f) - 1f
+        val zeroBased = index - 1
+        val col = zeroBased % columns
+        return GridMath.panForCol(col, columns)
     }
 }
